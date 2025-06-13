@@ -1,18 +1,30 @@
 # feeder.py
 
-A tiny zero-dependency helper that gathers source files, concatenates them,
-and (optionally) copies the result to your system clipboard.  
-Great for feeding large language models like GPT with multi-file projects.
+Concatenate multiple source files into a single text blob and (optionally)
+copy it to your clipboard.  
+Perfect for pasting entire projects into ChatGPT or similar tools.
 
-- **Platforms**
-  - Clipboard: Windows (`powershell Set-Clipboard`) and macOS (`pbcopy`)
-  - Other OSes: content is printed only
-- **Extension handlers** – plug-in style pre-processing based on file suffix  
-  (comes with a `.ipynb` handler that extracts code cells)
-- **Single file** – easy to drop into any repository
+- **Clipboard support**: Windows (`powershell Set-Clipboard`) and macOS (`pbcopy`)
+- **Extension handlers**: pre-process files by suffix (comes with a Jupyter
+  `.ipynb` handler that extracts code cells)
+- **Zero dependencies**: pure standard-library Python, single script
 
 ## Usage
 
 ```bash
-python feeder.py --root <DIR> --include <PATTERN1> <PATTERN2> ...
+python feeder.py --root <DIR> [--ignore <PATTERN> ...] [--no-clipboard]
+```
+
+## Examples
+
+### Ignore temporary and compiled files
+
+```shell
+python feeder.py --root ./project --ignore *.tmp *.pyc
+```
+
+### Just print; do not touch the clipboard
+
+```shell
+python feeder.py --root ./project --no-clipboard
 ```

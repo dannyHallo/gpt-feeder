@@ -7,7 +7,7 @@ handlers), print them, and copy the result to the clipboard
 
 Example
 =======
-    python feeder.py --root ./shader --include *.comp *.glsl
+    python feeder.py --root ./project --ignore *.tmp *.bak
 """
 
 import argparse
@@ -118,13 +118,18 @@ def _ipynb_handler(path: Path) -> str:
 # --------------------------------------------------------------------------- #
 # Core logic
 # --------------------------------------------------------------------------- #
-def collect_files(root: Path, patterns: List[str]) -> List[Path]:
-    """Return all files under *root* whose names match *patterns* (fnmatch)."""
-    result: List[Path] = []
+def should_ignore(name: str, patterns: List[str]) -> bool:
+    """Return True if *name* matches any ignore pattern."""
+    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
+
+
+def collect_files(root: Path, ignore_patterns: List[str]) -> List[Path]:
+    """Return all files under *root* that do NOT match *ignore_patterns*."""
+    files: List[Path] = []
     for p in root.rglob("*"):
-        if p.is_file() and any(fnmatch.fnmatch(p.name, pat) for pat in patterns):
-            result.append(p)
-    return sorted(result, key=lambda p: p.as_posix())
+        if p.is_file() and not should_ignore(p.name, ignore_patterns):
+            files.append(p)
+    return sorted(files, key=lambda p: p.as_posix())
 
 
 def build_output(files: List[Path], separator: str) -> str:
@@ -156,34 +161,34 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Concatenate source files and copy them to the clipboard "
         "(Windows/macOS).",
-        epilog="Example: python feeder.py --root ./shader --include *.comp *.glsl",
+        epilog="Example: python feeder.py --root ./proj --ignore *.tmp *.bak",
     )
     parser.add_argument(
         "--root",
         required=True,
         type=Path,
-        help="Root directory to search recursively",
+        help="Root directory to traverse recursively",
     )
     parser.add_argument(
-        "--include",
-        nargs="+",
-        required=True,
+        "--ignore",
+        nargs="*",
+        default=[],
         metavar="PATTERN",
-        help="One or more fnmatch patterns, e.g. *.py *.glsl",
+        help="Zero or more fnmatch patterns to exclude, e.g. *.tmp *.bak",
     )
     parser.add_argument(
         "--no-clipboard",
         action="store_true",
-        help="Print only, do not copy to the clipboard",
+        help="Print only, skip the clipboard step",
     )
     args = parser.parse_args()
 
     if not args.root.is_dir():
         sys.exit(f"Error: '{args.root}' is not a directory.")
 
-    files = collect_files(args.root, args.include)
+    files = collect_files(args.root, args.ignore)
     if not files:
-        sys.exit("No matching files found.")
+        sys.exit("No files found (after applying ignore patterns).")
 
     output = build_output(files, "\n" + "=" * 80 + "\n")
     print("\n" + output + "\n")
