@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 feeder.py – Concatenate readable source files and copy them to the clipboard
@@ -6,11 +5,16 @@ feeder.py – Concatenate readable source files and copy them to the clipboard
 
 Features
 ========
-1. Prints a directory tree (filtered by --ignore).
+1. Prints a directory tree (filtered by --ignore and --match).
 2. Skips unreadable / binary files automatically.
-3. --ignore supports            • file names (e.g.  *.tmp)
-                                • whole dirs (trailing “/”, e.g.  ./.git/)
-                                • path patterns (e.g.  docs/**/*.bak)
+3. Ignore patterns:
+      • file names        (e.g.  *.tmp)
+      • whole dirs        (trailing “/”, e.g.  ./.git/)
+      • path patterns     (e.g.  docs/**/*.bak)
+4. Positive filter (--match):
+      • same pattern syntax as --ignore
+      • processes ONLY files that match at least one pattern
+      • default = '*'  →  include everything
 """
 
 import argparse
@@ -101,7 +105,7 @@ def _ipynb_handler(path: Path) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Ignore-handling & binary detection
+# Ignore-handling, positive match & binary detection
 # --------------------------------------------------------------------------- #
 _BINARY_EXTS = {
     ".exe",
@@ -129,9 +133,7 @@ _BINARY_EXTS = {
 
 def _strip_leading_dot_slash(pat: str) -> str:
     """Remove a single leading './' or '.\\' (nothing more)."""
-    if pat.startswith("./"):
-        return pat[2:]
-    if pat.startswith(".\\"):
+    if pat.startswith("./") or pat.startswith(".\\"):
         return pat[2:]
     return pat
 
@@ -170,6 +172,31 @@ def should_ignore(path: Path, root: Path, patterns: List[str]) -> bool:
     return False
 
 
+def matches(path: Path, root: Path, patterns: List[str]) -> bool:
+    """Positive filter – return True when *path* satisfies at least one pattern."""
+    if not patterns:  # empty list → match everything
+        return True
+
+    rel = path.relative_to(root).as_posix()
+    name = path.name
+
+    for raw in patterns:
+        pat = _strip_leading_dot_slash(raw)
+
+        if pat.endswith("/"):
+            continue  # directory pattern not relevant for files
+
+        if "/" in pat:
+            if fnmatch.fnmatch(rel, pat):
+                return True
+            continue
+
+        if fnmatch.fnmatch(name, pat):
+            return True
+
+    return False
+
+
 def is_binary(path: Path) -> bool:
     if path.suffix.lower() in _BINARY_EXTS:
         return True
@@ -183,7 +210,11 @@ def is_binary(path: Path) -> bool:
 # --------------------------------------------------------------------------- #
 # Collect files & build output
 # --------------------------------------------------------------------------- #
-def collect_files(root: Path, ignore_patterns: List[str]) -> List[Path]:
+def collect_files(
+    root: Path,
+    ignore_patterns: List[str],
+    match_patterns: List[str],
+) -> List[Path]:
     files: List[Path] = []
 
     for dirpath, dirnames, filenames in os.walk(root):
@@ -198,6 +229,8 @@ def collect_files(root: Path, ignore_patterns: List[str]) -> List[Path]:
             p = cur_dir / fname
             if should_ignore(p, root, ignore_patterns):
                 continue
+            if not matches(p, root, match_patterns):
+                continue
             if is_binary(p):
                 continue
             files.append(p)
@@ -208,6 +241,7 @@ def collect_files(root: Path, ignore_patterns: List[str]) -> List[Path]:
 
 def build_output(files: Iterable[Path], separator: str) -> str:
     parts: List[str] = []
+    files = list(files)
     for i, p in enumerate(files):
         header = f"File: {p}"
         parts.extend([header, "-" * len(header)])
@@ -221,14 +255,40 @@ def build_output(files: Iterable[Path], separator: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Directory-tree printer (with ignore filtering)
+# Directory-tree printer (with ignore & match)
 # --------------------------------------------------------------------------- #
-def print_dir_tree(root: Path, ignore_patterns: List[str]) -> None:
+def _dir_contains_visible(
+    directory: Path, root: Path, ignore_patterns: List[str], match_patterns: List[str]
+) -> bool:
+    """Return True if *directory* has at least one visible file/dir after filters."""
+    for entry in directory.iterdir():
+        if should_ignore(entry, root, ignore_patterns):
+            continue
+        if entry.is_dir():
+            if _dir_contains_visible(entry, root, ignore_patterns, match_patterns):
+                return True
+        else:
+            if matches(entry, root, match_patterns):
+                return True
+    return False
+
+
+def print_dir_tree(
+    root: Path, ignore_patterns: List[str], match_patterns: List[str]
+) -> None:
     def _walk(base: Path, prefix: str = "") -> None:
+        entries = sorted(base.iterdir(), key=lambda p: p.name.lower())
+        # keep only visible entries
         entries = [
             e
-            for e in sorted(base.iterdir(), key=lambda p: p.name.lower())
+            for e in entries
             if not should_ignore(e, root, ignore_patterns)
+            and (
+                e.is_dir()
+                and _dir_contains_visible(e, root, ignore_patterns, match_patterns)
+                or e.is_file()
+                and matches(e, root, match_patterns)
+            )
         ]
         for i, entry in enumerate(entries):
             connector = "└── " if i == len(entries) - 1 else "├── "
@@ -249,16 +309,18 @@ def print_dir_tree(root: Path, ignore_patterns: List[str]) -> None:
 # --------------------------------------------------------------------------- #
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Concatenate readable source files and copy them to the "
-        "clipboard.",
+        description="Concatenate readable source files and (optionally) copy "
+        "them to the clipboard.",
         epilog=(
             "Examples:\n"
             "  python feeder.py --root . --ignore ./.git/ *.tmp\n"
-            "  python feeder.py --root project --ignore build/ docs/**/*.bak\n"
+            "  python feeder.py --root project "
+            "--match '*.py' '*.ipynb' --ignore build/\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--root", required=True, type=Path, help="Root directory")
+
     parser.add_argument(
         "--ignore",
         nargs="*",
@@ -269,19 +331,34 @@ def main() -> None:
             "Patterns follow fnmatch/glob rules."
         ),
     )
+
+    parser.add_argument(
+        "--match",
+        nargs="*",
+        default=["*"],
+        metavar="PATTERN",
+        help=(
+            "Only include files that match ANY of these patterns "
+            "(same syntax as --ignore).  If omitted: '*' (everything)."
+        ),
+    )
+
     parser.add_argument("--no-clipboard", action="store_true", help="Skip clipboard")
     args = parser.parse_args()
 
     if not args.root.is_dir():
         sys.exit(f"Error: '{args.root}' is not a directory.")
 
-    # 1. Pretty tree (respect --ignore)
-    print_dir_tree(args.root, args.ignore)
+    # Normalise match list: [] means “match everything”
+    match_patterns = [] if args.match == ["*"] else args.match
+
+    # 1. Pretty tree
+    print_dir_tree(args.root, args.ignore, match_patterns)
 
     # 2. File contents
-    files = collect_files(args.root, args.ignore)
+    files = collect_files(args.root, args.ignore, match_patterns)
     if not files:
-        sys.exit("No readable files found (after applying ignore patterns).")
+        sys.exit("No readable files found after applying filters.")
 
     output = build_output(files, "\n" + "=" * 80 + "\n")
     print(output + "\n")
